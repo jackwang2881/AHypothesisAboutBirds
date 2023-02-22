@@ -1,0 +1,1714 @@
+---
+title: "Analyzing Animal Behaviors from their Physical Qualities"
+author: "Jack Wang"
+date: "11/18/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# PREFACE
+Mathematicians have long believed that nature can be explained with math, from the Fibonacci Sequence to hexagons. Ecologists collected several data points pertaining to the animal specimens that they caught over over a long period of time in collaboration with other ecologists. Using the data collect, relationships and patterns such as the hind foot length of animals of different latitudes, mating seasons, biological triggers for mating, and migratory patterns can be explored.
+
+# LIBRARY IMPORTING
+Libraries that are included in our final project include: car, tdyverse, ggplot2, lubridate, tidymodels, knitr, readxl, ozmaps, sf, and caret.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(car)
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(tidymodels)
+library(knitr)
+library(readxl)
+library(ozmaps)
+library(sf)
+library(caret)
+```
+
+# DATA IMPORTING
+Data importing was done in a standard manner. All data sets included in the original folder were imported into our program and modified as needed. 
+```{r data import}
+# Import the combineda data set from the original ecology data files
+combineda_raw <- read.csv("./data/combineda.csv", sep=',', header=TRUE, 
+                     strip.white=TRUE,
+                     na.strings=c("", " ","NA", "NaN", "   NaN"),
+                     fileEncoding="UTF-8-BOM" )
+
+# Import the survey data from the original ecology data files
+survey_raw <- read.csv("./data/surveys.csv", sep=',', header=TRUE, 
+                     strip.white=TRUE,
+                     na.strings=c("", " ","NA", "NaN", "   NaN"),
+                     fileEncoding="UTF-8-BOM" )
+
+# Import the portal data from the original ecology data files
+portal_raw <- read.csv("./data/Portal_rodents_19772002_scinameUUIDs.csv", sep=',', header=TRUE, 
+                     strip.white=TRUE,
+                     na.strings=c("", " ","NA", "NaN", "   NaN"),
+                     fileEncoding="latin1" )
+
+# Standardizing the portal data set so that the column headings match headings
+# in other imported data sets above
+portal_renamed <- portal_raw %>% 
+rename('month' = 'mo',
+         'day' = 'dy',
+         'year' = 'yr',
+         'record_id' = 'recordID',
+         'plot_id2' = 'plot_id')
+
+# Import the plots reference data set from the original ecology files
+plots_ref <- read.csv("./data/plots.csv", sep=',', header=TRUE, 
+                     strip.white=TRUE,
+                     na.strings=c("", " ","NA", "NaN", "   NaN"),
+                     fileEncoding="UTF-8-BOM" )
+
+# Import the species reference data from the original ecology files
+species_ref <- read.csv("./data/species.csv", sep=',', header=TRUE, 
+                     strip.white=TRUE,
+                     na.strings=c("", " ","NA", "NaN", "   NaN"),
+                     fileEncoding="UTF-8-BOM" )
+
+# Combine all of the data sets to include only the variables that we need 
+# Retaining each row as an observation for a single animal at a single time point
+# The species and plot reference sets are not combined at this point
+animal_raw <- full_join(combineda_raw, survey_raw, by =
+                          c("record_id", "month", "day", "year", "plot_id", 
+                            "species_id", "sex", "hindfoot_length", "weight")) %>% 
+full_join(portal_renamed, by = c("record_id", "month", "day", "year", "sex", "species"))
+```
+
+# DATA CARPENTRY - OVERALL
+```{r data carpentry}
+# Get rid of some of the columns that we will not be using in any of our analysis
+# to make the data set cleaner/tidier
+animal_mod <- select(animal_raw, -c("note1", "note2", "note3", "note4", "note5",
+                                    "nestdir", "neststk", "prevlet", "prevrt",
+                                    "ltag", "tag", "JSON", "stake", "plot", 
+                                    "plot_id2"))
+
+# Merge the species reference set with the full data set to apply species, taxa,
+# and genus information to all of the rows with a species_id available
+animal_mod <- left_join(animal_mod, species_ref, by = c("species_id", "taxa", 
+                                                        "species", "genus"))
+```
+
+1) Merges (dy > day, hfl > hindfoot_length, wgt > weight, mo > month, yr > year)
+2) Deleting cols (note1, note2, note3, note4, note5, nestdir, neststk, prevlet, 
+prevrt, ltag, tag, JSON, stake, plot, plot_id2) because they are not needed in 
+any of the analysis that we will be performing.
+
+# HYPOTHESIS I
+
+### DATA CARPENTRY
+Within the data, we only wanted HFL, age, species, sex, wgt, latitude, and longitude data. Thus the variables in question was selected out. Any data points with an NA in those category was dropped. This is because if there is no entry, we cannot use it to model. There was a species who's age was labeled as 'ZJ' where Z mean adult, and J mean Juvenile. Since both was select, we cannot decide with a good concious whether the animal is a juvenile or adult so it was dropped from the study.
+
+```{r data carp hyp1}
+hfl_data <- animal_raw %>%  
+  select(species, sex, decimalLatitude, decimalLongitude, hfl, wgt, age) %>% 
+  drop_na(sex, species, age)
+```
+
+## A-PRORI HYPOTHESIS
+Animals have longer hind foot lengths the closer they are to the equator.
+
+### PREFACE
+We want to evaluate this claim as it is well known that animals in warmer regions are more active. The increased active necessitates the need for speed. Animals need more speed to catch prey and prey needs speed to escape predator. 
+
+**Statistical Hypothesis**: 
+$$ \text{H0 = No statistical significant difference in HFL Averages across different ages, species, sex, and distance from equator} $$
+$$ \text{Ha = At least one significant difference in HFL averages across different ages, species, sex, and distance from equator} $$
+The hypothesis will be tested based on the following equation:
+$$\begin{aligned}
+HFL = & \beta_0 + \beta_1(AH?) + \beta_2(AS?) + \beta_3(BA?) + \beta_4(CB?) + \beta_5(CM?) + \\
+&\beta_6(CQ?) +\beta_7(CS?) + \beta_8(CT?) + \beta_9(CU?) + \beta_{10}(CV?) + \\
+&\beta_{11}(DM?) + \beta_{12}(DO?) + \beta_{13}(DS?) + \beta_{14}(DX?) + \beta_{15}(EO?) + \beta_{16}(GS?) + \beta_{17}(NL?) + \beta_{18}(NX?) + \\
+&\beta_{19}(OL?) + \beta_{20}(OT?) + \beta_{21}(OX?) + \beta_{22}(PB?) + \beta_{23}(PC?) + \beta_{24}(PE?) + \beta_{25}(PF?) + \beta_{26}(PG?) + \\
+&\beta_{27}(PH?) + \beta_{28}(PI?) + \beta_{29}(PL?) + \beta_{30}(PM?) + \beta_{31}(PP?) + \beta_{32}(PU?) + \beta_{33}(PX?) + \beta_{34}(RF?) + \\
+&\beta_{35}(RM?) + \beta_{36}(RO?) + \beta_{37}(RX?) + \beta_{38}(SA?) + \beta_{39}(SB?) + \beta_{40}(SC?) + \beta_{41}(SF?) + \beta_{42}(SH?) + \\
+&\beta_{43}(SO?) + \beta_{44}(SS?) + \beta_{45}(ST?) +  \beta_{46}(SU?) + \beta_{47}(SX?) + \beta_{48}(UL?) + \beta_{49}(UP?) + \beta_{50}(UR?) + \\
+&\beta_{51}(US?) + \beta_{52}(ZL?) + \beta_{53}(ZM?) + \beta_{54}(Longitude) + \\
+&\beta_{55}(Latitude) + \beta_{56}(Male?) + \beta_{57}(Juvenile?)
+\end{aligned}$$
+
+**Scientific Hypothesis**: 
+Animals have longer hind foot lengths the closer they are to the equator
+
+### Apriori Hypothesis Evaluation
+From the data set, if one was to filter out the 'NA's from the data set for each of the variables used in the model. One will find that there is not one data entry where there there is a complete data set. One of the biggest problems with this data set is the lack of latitude and longitude data entries. The entries are plotted on a U.S map and have been inserted into the supplementary to show that it lacks data points and that there are only located in Florida and Idaho. For that it is impossible to model the data set with the equation given early. Since this is the case, in our Exploratory Hypothesis, we will pivot our study from examining the effect of distance from equator on hind foot length to the weight of an animal on hind foot length and whether this relation is sustained even within a species. 
+
+```{r, fig.align="center"}
+#initial visualization
+map_graph_data <- animal_raw %>% 
+  drop_na(decimalLatitude,decimalLongitude) %>% 
+  rename(lat = decimalLatitude,
+         lon = decimalLongitude)
+
+#loading map data
+mainstates <- map_data("state")
+
+#plotting the data [Move to end]
+nodatamap <- ggplot(map_graph_data, aes(lon, lat)) + 
+  geom_polygon( data=mainstates, aes(x=long, y=lat, group=group),
+                color="black", fill="lightblue") +
+  geom_point(aes(color = species), size = 1, show.legend = TRUE) +
+  coord_quickmap() +
+  labs(
+    title = "US map with animal sighting",
+    x = "Longitude",
+    y = "Latitude"
+  )
+```
+
+## EXPLORATORY HYPOTHESIS
+Does the size of an animal effect the their hind foot length? In this exploration we will examine the general relationship between an animal's weight and hind foot length. Then, we will explore whether this relationship holds true within the species. 
+
+**Scientific Hypothesis**: The heavier the animal the longer their hind foot length. This is because the Hind foot is used to support the body. The bigger the animal the stronger the hind foot needs to be. 
+
+**Statistical Hypothesis**: 
+$$ \text{H0 = No statistical significant difference in HFL Averages across different ages, species, sex, and weight} $$
+$$ \text{Ha = At least one statistical significant difference in HFL Averages across different ages, species, sex, and weight} $$
+
+## Exploratory: Data Visualization
+Looking at the initial data visualization, we can see two things. In the first scatter plot, within each species we see somewhat of a positive trend between the weight of the animal and their hind foot length. The second graph depicts animals in the data set where their weights are subdivided into 10 equally sized binned weight classes. From this we can see that from their mean that there seems to have some sort of relationship between weight and hind foot length.
+
+```{r, fig.align="center"}
+hfl_data2 <- hfl_data %>% 
+  rename(species_id = species) %>% 
+  left_join(., species_ref, by = "species_id") %>% 
+  mutate(wgt = as.numeric(wgt)) %>% 
+  mutate(wgt_class = cut(wgt, 10)) %>% 
+  drop_na(wgt_class) %>% 
+  filter(age != 'ZJ')
+
+#HLF Averages
+ggplot(hfl_data2) +
+  geom_jitter(aes(wgt, hfl, color = species), na.rm = TRUE) +
+  labs(title = "HFL by Weight",
+       y = "Hindfoot Length (mm)",
+       x = "Weight (g)") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = .5),
+        legend.position="bottom")
+
+#HFL boxplot
+ggplot(hfl_data2) +
+  geom_boxplot(aes(wgt_class, hfl), na.rm = TRUE) +
+  stat_summary(aes(wgt_class, hfl),fun.data = mean_se, color = "RED", na.rm = TRUE) +
+  scale_x_discrete(guide =guide_axis(n.dodge=2))+
+  labs(title = "HFL by weight class",
+       y = "Hind Foot length (mm)",
+       x = "Weight Class (g)") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = .5))
+
+```
+
+## Exploratory: Modeling
+A linear model was created using the following equation:
+$$\begin{aligned}
+HFL = & \beta_0 + \beta_1(AH?) + \beta_2(AS?) + \beta_3(BA?) + \beta_4(CB?) + \beta_5(CM?) + \\
+&\beta_6(CQ?) +\beta_7(CS?) + \beta_8(CT?) + \beta_9(CU?) + \beta_{10}(CV?) + \\
+&\beta_{11}(DM?) + \beta_{12}(DO?) + \beta_{13}(DS?) + \beta_{14}(DX?) + \beta_{15}(EO?) + \beta_{16}(GS?) + \beta_{17}(NL?) + \beta_{18}(NX?) + \\
+&\beta_{19}(OL?) + \beta_{20}(OT?) + \beta_{21}(OX?) + \beta_{22}(PB?) + \beta_{23}(PC?) + \beta_{24}(PE?) + \beta_{25}(PF?) + \beta_{26}(PG?) + \\
+&\beta_{27}(PH?) + \beta_{28}(PI?) + \beta_{29}(PL?) + \beta_{30}(PM?) + \beta_{31}(PP?) + \beta_{32}(PU?) + \beta_{33}(PX?) + \beta_{34}(RF?) + \\
+&\beta_{35}(RM?) + \beta_{36}(RO?) + \beta_{37}(RX?) + \beta_{38}(SA?) + \beta_{39}(SB?) + \beta_{40}(SC?) + \beta_{41}(SF?) + \beta_{42}(SH?) + \\
+&\beta_{43}(SO?) + \beta_{44}(SS?) + \beta_{45}(ST?) +  \beta_{46}(SU?) + \beta_{47}(SX?) + \beta_{48}(UL?) + \beta_{49}(UP?) + \beta_{50}(UR?) + \\
+&\beta_{51}(US?) + \beta_{52}(ZL?) + \beta_{53}(ZM?) + \beta_{54}(Weight) + \\
+&\beta_{55}(Male?) + \beta_{56}(Juvenile?)
+\end{aligned}$$
+
+From the term estimates, it seems that all of the terms are significant. Moreover, from the model diagnostics looking at the R^2^ value of .9813879. This means that the model is really good at capturing the variation within the data. That said, examining the number of terms, it is very clear that there is a very large degree of freedom. We will then evaluate this model to a couple of future models to see if they are better. Additionally, a Type II anova test was performed on the model it was found that Age captured NONE of the variance seen in the data set and was also not significant at the 5% level. Examining the other terms, we see that Sex and Wgt although captures less of the data when compared to species, has a significant p value. The term estimates are placed in the appendix under "Term Estimates for Initial Exploratory Model".
+
+```{r}
+#creating the model
+HFL_by_weight <- lm(hfl_data2, formula = hfl ~ sex + wgt + age + species_id)
+
+#diagnostics
+kable(select(glance(HFL_by_weight), c(r.squared, p.value, AIC, BIC, df)),
+      caption = "Model Diagnostic Data")
+#Anova
+kable(tidy(Anova(HFL_by_weight)),
+      caption = "Anova Type II")
+```
+
+## Exploratory: Model Comparison
+Since the degree of freedom is so high, we want to reduce it to improve our model diagnostics. Particulary this is true with AIC and BIC scores. The first thing we will do with our model is to drop the age variable from the study. Since it is capturing 0% of the data and had no significance. Dropping this variable will have no significant impact on the term estimates. We also want to see if we can improve the amount of data captured by our model. Since the type of species can have interacted effect with weight, we will add this term in. Recall that adding more variables makes the overall model diagnostic worse (more degrees of freedom). So we want to see if the benefits would outweight the cost of degrees of freedom.
+
+Shown below are the model diagnostics for the two new models. Comparing the ageless model with our original, we find that the new model had no changes to the R^2^ value and the AIC/BIC scores AIC improved by ~2 pts and BIC improved by ~10 pts. Since the rest of the data (terms and r^2^) stayed the same. This model is clearly better. Looking at the model with interaction model and the original, we find that the AIC and BIC score worsened by ~1100 points and the variance captured by the data decreased. From the model comparison, we will move forward with the Age removed from our original model.
+```{r}
+#modeling without age
+HFL_by_weight_noage <- lm(hfl_data2, formula = hfl ~ sex + wgt + species_id)
+
+#modeling with interactions
+HFL_by_weight_inter <- lm(hfl_data2, formula = hfl ~ sex + wgt:species_id)
+
+#model diagnostics for without age:
+kable(select(glance(HFL_by_weight_noage), c(r.squared, p.value, AIC, BIC, df)),
+      caption = "Model Diagnostic Data for model without Age")
+#Anova
+kable(tidy(Anova(HFL_by_weight)),
+      caption = "Anova Type II: Model without Age")
+
+#diagnostics for interactions:
+kable(select(glance(HFL_by_weight_inter), c(r.squared, p.value, AIC, BIC, df)),
+      caption = "Model Diagnostic Data for Interactions")
+#Anova
+kable(tidy(Anova(HFL_by_weight)),
+      caption = "Anova Type II: Model with Interactions")
+```
+
+
+## Exploratory: Model Outliers
+From the outlier analysis, it looks like there is a large amount of data that are over the threshold for both cooksd and .hat. We decided NOT to remove the outliers. This is because removing the outliers only gave a .01 improvement to the model. That said, the df dropped from 23 to 12. This was because certain species entirely was thought of as an outlier for the model. Removing those species would defeat the purpose of the exploratory study which looks at the relationship between weight and hind foot length.
+
+```{r, fig.align="center"}
+#augmenting the data
+HFL_Augment <- augment(HFL_by_weight_noage)
+
+#Plotting outliers
+outlier_HFL <- ggplot(HFL_Augment, aes(.hat, .std.resid, size = .cooksd)) +
+  geom_point(shape = 1, na.rm = TRUE) +
+  geom_vline(xintercept = (1+23)/14420, linetype = 2)+
+  geom_vline(xintercept = 2 * (1+23)/14420, linetype = 2, color="orange") +
+  geom_vline(xintercept = 3 * (1+23)/14420, linetype = 2, color="red") +
+  geom_hline(yintercept = c(-2, 2), linetype = 2) +
+  labs(title = "Residuals Analysis",
+       y = "Standardized Residuals") 
+Cooksd_HFL <- ggplot(HFL_Augment, aes(.hat, .cooksd)) +
+  geom_point(shape = 1, na.rm = TRUE) +
+  geom_vline(xintercept = (2)/14420, linetype = 2) +
+  labs(title = "Cooksd Distance Analysis")
+
+#Cooksd
+
+#Removing Outliers
+HFL_Adjusted <- HFL_Augment %>% 
+  filter(.hat < 3*24/14420) %>% 
+  filter(.cooksd < 2/sqrt(14420))
+```
+
+## Exploratory: Final Model and Visual
+Since we are not removing the models. From our model comparison, the model where age was dropped was the best model. We wil be drawing our conclusions from this model. Shown below are the model data and visual. The terms for the final model is in the appendix.
+
+```{r, fig.align="center"}
+#Showing the Model
+kable(select(glance(HFL_by_weight_noage), c(r.squared, df, AIC, BIC)),
+      caption = "R-Squared and Model Diagnostic Scores")
+
+kable(Anova(HFL_by_weight_noage),
+      caption = "Anova Type II Results") 
+
+#Augmenting
+HFL_ageless_aug <- augment(HFL_by_weight_noage) %>% 
+  mutate(wgt_class = cut(wgt, 10)) %>% 
+  left_join(., species_ref, by = 'species_id')
+
+ggplot(HFL_ageless_aug) +
+  geom_boxplot(aes(sex, .fitted, color = sex), alpha = .1) +
+  stat_summary(aes(sex, .fitted),fun.data = mean_se, color = "RED", na.rm = TRUE) +
+  labs(title = "Weight by HFL separated by Gender",
+       x = "Sex",
+       y = "Hind Foot Length (mm)",
+       caption = "red dot is the mean") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = .5))
+
+#plotting by weight
+ggplot(HFL_ageless_aug) +
+  geom_point(aes(wgt, hfl), color = "Black", na.rm = TRUE, alpha = .3) +
+  geom_point(aes(wgt, .fitted, color = species), na.rm = TRUE, alpha = .3) +
+  geom_smooth(aes(wgt, .fitted, alpha = 0), formula = y~x, method = "lm", color = "red") +
+  labs(title = "HFL by weight: Model on Raw",
+       x = "Hind Foot length (mm)",
+       y = "Weight (g)",
+       caption = "The red line is the general trend across all species") +
+  theme_bw() +
+  theme(legend.position="bottom") +
+  theme(plot.title = element_text(face = "bold", hjust = .5))
+
+```
+```{r, fig.align="center", fig.height=8, fig.width= 10}
+#plotting
+ggplot(HFL_ageless_aug) +
+  geom_point(aes(wgt, hfl), alpha = .1) +
+  geom_smooth(aes(wgt, .fitted), formula = y ~ x, method = "lm", 
+              color = "red", alpha = 0) +
+  facet_wrap(vars(species), scales = 'free') +
+  labs(title = "Weight by HFL separated by species",
+       x = "Weight (g)",
+       y = "Hind Foot Length (mm)",
+       caption = "Model is shown in red") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = .5))
+```
+
+## Conclusion
+
+**Does weight have an effect on hind foot length?**: 
+Examining the graph "HFL by weight" we see that there are clear striations of different species at different weights. They all seem to have a positive trend. When we take into consideration of the weight class to hindfoot length we see a clear positive relationship shown by the red line. To further support this answer, looking at the Anova results taken on the model, we see that weight (wgt) captures a large portion of the variation seen within the graph. Additionally it is significant with F(1,23)[1200.99][P = ~0] It is true however that weight captures less than that of species, but nonetheless it has a impact on the hind foot length. The heavier the animal, the longer its hind foot. Examining the terms page, we see that with a confidence of p<.05, that weight has an approximate impact of .0497 mm increase in hind foot length per gram of weight increase.
+
+**Does weight within species have an effect on hind foot length?** 
+Examining the graph labeled "Weight by HFL separated by species", the species have been faceted such that each species had its facet window. In some of the species, there were not enough points to get a confident model, however in the species that do, we see that there is a general trend within each species the size of the animal does have an effect on the hind foot length. From the Anova results we see that species captures the largest number of variation seen within the data with a F(21,23)[8871.5][P = ~0]. 
+
+**Does sex have an effect on hind foot length?**
+Examining the graph labeled "Weight by HFL separated by gender", the animals were divided into male and female. Using this box plot we see that males in general have a shorter hind lengths than females. However from our t-tests we find males in general have a larger hind foot length when just accounting for sex. The reason why the box plot shows that females have a larger hind foot length is that females generally weigh more than males. This weight is influenced in a separate factor explain above leading to the box plot showing females having longer hind foots. When accounting just for sex, at a F(1,23)[85.95][P = ~0], we find that males were .2 mm longer in hind foot when compared to females.
+
+**Does hind length change from juvenile to adulthood?**
+This hypothesis couldn't be answered since we dropped age from our study.
+
+# HYPOTHESIS II
+
+### DATA CARPENTRY
+Data manipulation - transformations, etc.
+Based off of the a-prori, the only columns needed for the data analysis are 'record_id', 'month', 'sex', 'species', 'decimalLatitude', 'age', and 'pregnant,' but some addition columns were kept for context of the other data points. Only data point with 'sex' entered as 'F' (female) were kept, since the study is on pregnancy, logically only females can become pregnant. Mislabeled 'pregnant' data points were changed to 'N' and all NA values were also changed to 'N'. Erroneous 'pregnant' data points were also changed to 'N.' Finally, 'pregnant' was change to a factor because that is the class variable that will be predicted by the other features. 
+Another data frame was created containing only positive 'pregnant' data points.
+
+```{r data carp hyp2, fig.align="center"}
+#pregnancy data frame
+pregnancy_data <- animal_mod %>%
+  #eliminate unnecessary columns 
+  select(-c(reprod, testes, vagina, plot_id, hindfoot_length, plot_type, survey_id, 
+            period, nipples, lactation, hfl)) %>%
+  #only need female animal data points
+  filter(sex == 'F') %>% 
+  #change accidental inputs in 'pregnant' to negative
+  mutate(pregnant =if_else(condition = pregnant == 'Q', "N", pregnant),
+         pregnant=if_else(condition = pregnant == 'S', "N", pregnant),
+         pregnant =if_else(condition = pregnant == 'L', "N", pregnant),
+         pregnant =if_else(condition = pregnant == 'E', "N", pregnant))%>%
+  #this species name is long and does not fit in some of the graphs
+  mutate(species=if_else(condition = species== "ochrognathus", "SO", species))%>%
+  #NA's can be safely assumed as not pregnant
+  replace_na(list(pregnant = "N"))%>%
+  #'pregnant' is the class variable in the data frame, so it must be a factor as such
+  mutate(pregnant = as_factor(pregnant))
+#data frame with only positive pregnancy status 
+pregnant_data <- pregnancy_data%>%
+  filter(pregnant=='P')
+```
+
+## A-PRORI HYPOTHESIS
+
+### PREFACE
+"Survival of the Fittest" has become a phrase used in everyday life, even incorrectly in most cases. The origins of this phrase, comes from Darwin's Theory of Evolution that states that an organism with more favorable traits to survive the environment, will produce more offspring and thus their genetics will supersede the genetics of other the other organisms(National Geographic). Based off of this, a mating season implies that there is an ideal time of the year to have and raise offspring. Using this data set, the relationship between the pregnancy rates of different species at different times of the year and latitude coordinates will be investigated.
+
+$$ \begin{aligned}
+H_o : \beta_{month:decimalLatitude} = 0\\
+H_A : \beta_{month:decimalLatitude} \neq 0
+\end{aligned} $$
+
+Scientific Hypothesis: 
+An interaction between time of year and distance from the equator influences whether the animal is pregnant.
+
+### DATA VISUALIZATION
+```{r, fig.align="center"}
+#visual displaying how many positive and negative pregnancies there are in the data frame
+ggplot(data= pregnancy_data, mapping = aes(x= pregnant)) +
+  geom_bar(aes(fill = pregnant)) +
+  labs(title= "Pregnancy Count")+
+  theme_bw()+ 
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = .5),
+  axis.ticks = element_line(colour = "grey70", size = 0.2),
+  panel.grid.major = element_line(colour = "grey70", size = 0.2),
+  panel.grid.minor = element_blank()) 
+```
+Figure: In this figure, the number of positive and negative pregnancies are displayed. It can be observed that the data is heavily skewed toward negative pregnancy status.
+
+```{r, fig.align="center"}
+#visual displaying how many positive and negative pregnancies there are in the data frame based off month
+ggplot(data= pregnancy_data, mapping = aes(x= month, fill= pregnant)) +
+  geom_bar() +
+  labs(title= "Pregnancy Count over the Months of the Year")+
+  theme_bw()+ 
+  theme(plot.title = element_text(face = "bold", hjust = .5),
+  axis.ticks = element_line(colour = "grey70", size = 0.2),
+  panel.grid.major = element_line(colour = "grey70", size = 0.2),
+  panel.grid.minor = element_blank()) 
+```
+Figure: In this figure, the number of positive and negative pregnancies are displayed according to month. It can be observed that the data is heavily skewed toward negative pregnancy status.There seems to be a slight downward trend of pregnancies starting in the third month of the year.
+
+```{r, fig.align="center"}
+#visual displaying how many positive pregnancies there are in the data frame based off month
+ggplot(data= pregnancy_data, mapping = aes(x= month)) +
+  geom_bar(fill = "purple") +
+  labs(title= "Positive Pregnancy Count over the Months of the Year")+
+  theme_bw()+ 
+  theme(plot.title = element_text(face = "bold", hjust = .5),
+  axis.ticks = element_line(colour = "grey70", size = 0.2),
+  panel.grid.major = element_line(colour = "grey70", size = 0.2),
+  panel.grid.minor = element_blank())  +
+  labs(x = "Month of Year",
+       y = "Number of Positive Pregnancies")
+```
+Figure: In this figure, only the number of positive pregnancies are displayed. No real trend can be observed in the data given, but the seven month has the highest amount of pregnancies.
+
+```{r, fig.align="center", fig.height= 15 , fig.width= 8.5}
+#visual displaying how many positive pregnancies there are in the data frame based off month and separated by species
+ggplot(data= pregnancy_data, mapping = aes(x= month, fill = pregnant)) +
+  geom_bar()+ 
+  facet_wrap(vars(`species`), scale = 'free_y', ncol = 3) +
+  labs(title= "Pregnancy Count over the Months of the Year Seperated by Species")+
+  theme_bw()+ 
+  theme(plot.title = element_text(face = "bold", hjust = .5),
+  axis.ticks = element_line(colour = "grey70", size = 0.2),
+  axis.text.x = element_text(angle= 0, hjust= 1),
+  panel.grid.major = element_line(colour = "grey70", size = 0.2),
+  panel.grid.minor = element_blank(),
+  axis.text=element_text(size= 10)) + 
+  labs(x = "Month of Year",
+       y = "Count")
+```
+Figure: In this figure, the number of positive and negative pregnancies are displayed according to month and separated by species. It can be observed that the data is heavily skewed toward negative pregnancy status, with only a couple of species displaying any number of positive cases.
+
+```{r, fig.align="center"}
+#visual displaying how many positive and negative pregnancies there are in the data frame based off age
+ggplot(data= pregnancy_data, mapping = aes(x= age, fill = pregnant)) +
+  geom_bar() +
+  labs(title= "Pregnancy Count According to Age")+
+  theme_bw()+ 
+  theme(plot.title = element_text(face = "bold", hjust = .5),
+  axis.ticks = element_line(colour = "grey70", size = 0.2),
+  panel.grid.major = element_line(colour = "grey70", size = 0.2),
+  panel.grid.minor = element_blank()) +
+    labs(x = "Age",
+       y = "Number of Positive Pregnancies")
+
+```
+Figure: In this figure, the number of positive and negative pregnancies are displayed according to age. it can be observed that the data is heavily skewed toward negative pregnancy status and an insignificant amount of juvenile animals have pregnancy data.
+
+### MODEL DEVELOPMENT
+```{r, fig.align="center"}
+# Apriori_pregnancy_status <- glm(`pregnant` ~ `decimalLatitude`:`month` + 
+#                                 `species` + `age`,
+#                                 data = pregnancy_data,
+#                                 family = "binomial")
+# #display coefficients in kable
+# kable(select(tidy(Apriori_pregnancy_status), term, estimate), caption = "A Priori Hypothesis Coefficients")
+
+```
+
+#### GENERAL EQUATION
+$$ 
+Pregnancy Status = \beta_0 + \beta_{Species}Species? + \beta_{Age}Age? + \\
+\beta_{Month}Month + \beta_{Latitude}Latitdue + \beta_{MonthLatitude}MonthLatitude
+$$
+
+### A PRIORI CONCLUSION
+Due to insufficient data, the model could not be run. It should be noted, due to insufficient data, some exploratory hypothesizes could not be investigated and thus are absent from this report. Specifically with 'decimalLatitude' and 'age' data points.
+
+## EXPLORATORY HYPOTHESIS
+
+### PREFACE
+The relationship between time of year and pregnancy status is directly investigated in this exploratory hypothesis. Conditions throughout the time of year fluctuate with the changes in the distance from the sun, so there could be an adaptation to mate during a specific time of year, irregardless of location and species.
+
+$$ \begin{aligned}
+H_o : \beta_{month} = 0\\
+H_A : \beta_{month} \neq 0
+\end{aligned} $$ 
+
+Scientific Hypothesis: 
+Time of year influences whether the animal is pregnant. 
+
+### DATA VISUALIZATION
+```{r, fig.align="center"}
+#visual displaying how many positive and negative pregnancies there are in the data frame based off month
+ggplot(data= pregnancy_data, mapping = aes(x= month, fill= pregnant)) +
+  geom_bar() +
+  labs(title= "Pregnancy Count over the Months of the Year")+
+  theme_bw()+ 
+  theme(plot.title = element_text(face = "bold", hjust = .5),
+  axis.ticks = element_line(colour = "grey70", size = 0.2),
+  panel.grid.major = element_line(colour = "grey70", size = 0.2),
+  panel.grid.minor = element_blank()) +
+    labs(x = "Month of Year",
+       y = "Number of Positive Pregnancies")
+```
+Figure: In this figure, the number of positive and negative pregnancies are displayed according to month. It can be observed that the data is heavily skewed toward negative pregnancy status.There seems to be a slight downward trend of pregnancies starting in the third month of the year.
+
+### MODEL DEVELOPMENT
+```{r}
+Month_pregnancy_status <- glm(`pregnant` ~ `month`,
+                                data = pregnancy_data,
+                                family = "binomial")
+#display coefficients in kable
+kable(select(tidy(Month_pregnancy_status), term, estimate), caption = "Month Hypothesis Coefficients")
+```
+
+#### GENERAL EQUATION
+$$ 
+Pregnancy Status = \beta_0 + \beta_{Month}Month
+$$
+
+#### MODEL VISUALIZATION
+```{r, fig.align="center"}
+#manipulation of the data to be plotted properly
+pregnant_lm <- pregnancy_data
+pregnant_lm$pregnant = as.numeric(pregnant_lm$pregnant)-1
+# Plot the model in the prior graphs
+
+predict_pregnancy <- tibble(predict(Month_pregnancy_status,
+                                                type = "response"))
+
+predict_pregnancy <- pregnant_lm%>%
+  mutate(pregnant=(predict(Month_pregnancy_status,
+                                                type = "response")))
+
+ggplot(data = pregnant_lm, 
+       aes(x = month, y = pregnant)) +
+  geom_point() +
+  geom_line(data = predict_pregnancy, size = 1)+
+  labs(title= "General logistic Model of Pregnancy over the Months of the Year")+
+  theme_bw()+ 
+  theme(plot.title = element_text(face = "bold", hjust = .5),
+  axis.ticks = element_line(colour = "grey70", size = 0.2),
+  panel.grid.major = element_line(colour = "grey70", size = 0.2),
+  panel.grid.minor = element_blank())
+```
+Figure: In this figure, positive pregnancy is displayed as the value 1 and negative pregnancy is displayed as the value zero. The line is the model of the general logistic regression, but it can be observed that the negative pregnancy status pulls the line to a negative results.
+
+### ANALYSIS OF MODEL
+```{r, fig.align="center"}
+## DISPLAY ALL OF THESE VALUES WITH KABLES, Make sure to give accurate captions
+get_logistic_pred = function(mod, data, res = "y", pos = 1, neg = 0, cut = 0.5) 
+  {probs = predict(mod, newdata = data, type = "response")
+  ifelse(probs > cut, pos, neg)}
+
+pred_10 <- get_logistic_pred(Month_pregnancy_status, data = pregnant_lm, res = "pregnant", 
+                                 pos = "Yes", neg = "No", cut = 0.1)
+pred_50 <- get_logistic_pred(Month_pregnancy_status, data = pregnant_lm, res = "pregnant", 
+                                 pos = "Yes", neg = "No", cut = 0.5)
+pred_90 <- get_logistic_pred(Month_pregnancy_status, data = pregnant_lm, res = "pregnant", 
+                                 pos = "Yes", neg = "No", cut = 0.9)
+
+kable(head(tibble(pred_10 = pred_10, pred_50= pred_50, pred_90=pred_90)))
+
+results_10 = tibble(predicted = pred_10, actual = pregnant_lm$pregnant)
+results_50 = tibble(predicted = pred_50, actual = pregnant_lm$pregnant)
+results_90 = tibble(predicted = pred_90, actual = pregnant_lm$pregnant) 
+
+```
+Table: In this table, the predictions of the model using variable cutoff can be observed. All predictions result in 'No,' so a confusion matrix can be not used to evaluate the model because this model can not predict pregnancy status based solely off month.
+
+### EXPLORATORY CONCLUSION
+Due to a skew towards 'N' in the 'pregnant' class, the model can not be properly evaluated because the model only predicts 'No'.
+
+## EXPLORATORY HYPOTHESIS
+
+### PREFACE
+The relationship between time of year, species, and pregnancy status is directly investigated in this exploratory hypothesis. Conditions throughout the time of year fluctuate with the changes in the distance from the sun, so there could be an adaptation of certain species to mate during a specific time of year, irregardless of location.
+
+$$ \begin{aligned}
+H_o : \beta_{month} + \beta_{species} = 0\\
+H_A : \beta_{month} +  \beta_{species} \neq 0
+\end{aligned} $$ 
+
+Scientific Hypothesis: 
+Time of year and species influences whether the animal is pregnant. 
+
+### DATA VISUALIZATION
+```{r, fig.align="center", fig.height= 15 , fig.width= 8.5}
+#visual displaying how many positive pregnancies there are in the data frame based off month and separated by species
+ggplot(data= pregnancy_data, mapping = aes(x= month, fill = pregnant)) +
+  geom_bar()+ 
+  facet_wrap(vars(`species`), scale = 'free_y', ncol = 3) +
+  labs(title= "Pregnancy Count over the Months of the Year Seperated by Species")+
+  theme_bw()+ 
+  theme(plot.title = element_text(face = "bold", hjust = .5),
+  axis.ticks = element_line(colour = "grey70", size = 0.2),
+  axis.text.x = element_text(angle = 0, hjust= 1),
+  panel.grid.major = element_line(colour = "grey70", size = 0.2),
+  panel.grid.minor = element_blank(),
+  axis.text=element_text(size= 10)) 
+```
+Figure: In this figure, the number of positive and negative pregnancies are displayed according to month and separated by species. It can be observed that the data is heavily skewed toward negative pregnancy status, with only a couple of species displaying any number of positive cases.
+
+### MODEL DEVELOPMENT
+```{r, fig.align="center"}
+#data frame manipulation to be evaulated in subsequent sections
+species_pregnancy_data <- pregnancy_data%>%
+  drop_na(species)%>%
+  mutate(pregnant = if_else(condition = pregnant == "P", "Yes", "No"),
+         pregnant=as_factor(pregnant))
+
+Month_species_pregnancy_status <- glm(`pregnant` ~ `month` +`species`,
+                                data = species_pregnancy_data,
+                                family = "binomial")
+#display coefficients in kable
+kable(select(tidy(Month_species_pregnancy_status), term, estimate), caption = "Month and Species Hypothesis Coefficients")
+
+```
+
+#### GENERAL EQUATION
+$$ 
+Pregnancy Status = \beta_0 + \beta_{Month}Month + \beta_{Species}Species?
+$$
+
+#### MODEL VISUALIZATION
+```{r message = FALSE, warning = FALSE, fig.align="center",  fig.height=10, fig.width=10 }
+#manipulation of the data to be plotted properly
+species_pregnant_lm <- species_pregnancy_data
+species_pregnant_lm$pregnant = as.numeric(species_pregnant_lm$pregnant)-1
+# Plot the model in the prior graphs
+species_predict_pregnancy <- tibble(predict(Month_species_pregnancy_status,
+                                                type = "response"))
+
+species_predict_pregnancy <- species_pregnant_lm%>%
+  mutate(pregnant=(predict(Month_species_pregnancy_status,
+                                                type = "response")))
+
+ggplot(data = species_pregnant_lm, 
+       aes(x = month, y = pregnant)) +
+  facet_wrap(vars(`species`)) +
+  geom_point() +
+  geom_line(data = species_predict_pregnancy, size = 1) +
+  labs(title= "Pregnancy Count over the Months of the Year Seperated by Species",
+       caption = "Top row are 'Yes' and bottom row are 'No'",
+       y = "Pregnancy Status")+
+  theme_bw()+ 
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = .5),
+  axis.ticks = element_line(colour = "grey70", size = 0.2),
+  axis.text.x = element_text(angle= 45, hjust= 1),
+  panel.grid.major = element_line(colour = "grey70", size = 0.2),
+  panel.grid.minor = element_blank()) +
+  scale_y_discrete(guide = guide_axis(n.dodge=2))
+```
+Figure: In this figure, the number of positive and negative pregnancies are displayed according to month and separated by species. It can be observed that the data is heavily skewed toward negative pregnancy status, with only a couple of species displaying any number of positive cases. This results in only some species displaying the line of the general logistic regression model. Within these minimal results, it can be observed that the negative pregnancy status pulls the line to a negative results.
+
+### ANALYSIS OF MODEL
+```{r, fig.align="center"}
+## DISPLAY ALL OF THESE VALUES WITH KABLES, Make sure to give accurate captions
+get_logistic_pred = function(mod, data, res = "y", pos = 1, neg = 0, cut = 0.5) 
+  {probs = predict(mod, newdata = data, type = "response")
+  ifelse(probs > cut, pos, neg)}
+
+pred_10 = get_logistic_pred(Month_species_pregnancy_status, data = species_pregnancy_data, res = "pregnant", 
+                                 pos = "Yes", neg = "No", cut = 0.1)
+pred_50 = get_logistic_pred(Month_species_pregnancy_status, data = species_pregnancy_data, res = "pregnant", 
+                                 pos = "Yes", neg = "No", cut = 0.5)
+pred_90 = get_logistic_pred(Month_species_pregnancy_status, data = species_pregnancy_data, res = "pregnant", 
+                                 pos = "Yes", neg = "No", cut = 0.9)
+
+kable(head(tibble(pred_10 = pred_10, pred_50= pred_50, pred_90=pred_90)),
+      caption ="Model Predictions")
+
+results_10 = table(predicted = pred_10,
+                    actual = species_pregnancy_data$pregnant)
+results_50 = table(predicted = pred_50,
+                    actual = species_pregnancy_data$pregnant)
+results_90 = table(predicted = pred_90,
+                    actual = species_pregnancy_data$pregnant) 
+
+
+confusion_10 = confusionMatrix(results_10, positive = "Yes")
+
+
+kable(tibble("Accuracy" = confusion_10$overall["Accuracy"],
+            "Sensitivity" = confusion_10$byClass["Sensitivity"],
+            "Specificity" = confusion_10$byClass["Specificity"]),
+      caption = "Evalutation Results from Confusion Matrix")
+```
+Table: In this table, the predictions of the model using variable cutoff can be observed. All predictions result in 'No,'  expect with a value of .1 cutoff, so only this confusion matrix can be used to evaluate the model. Overall, the general logistic regression is skewed toward 'No.'
+Table: In this table, evaluation results are displayed based off of the confusion matrix produced from the prediction model with a .1 cutoff. Based off of the evaluation, the accuracy and specificity are high, but sensitivity is low.
+
+### EXPLORATORY CONCLUSION
+In this exploratory hypothesis, the linear regression model produces results with a prediction cutoff of .1. Based off these predictions, a confusion matrix was produced and accuracy, sensitivity, and specificity was evaluated. Though the accuracy and specificity is high the sensitivity is low and this may be due to the fact that the data is heavily skewed towards 'No,' so while the model was able to predict two classes, 'No' was favored and 'No' was a majority of the actual points.
+
+# HYPOTHESIS III
+
+### DATA CARPENTRY
+we created a new data frame to include only the pregnant, age, sex, testes, and vagina variables since those are the variables in question for my hypothesis. we converted all of these above variables into factors since none of them included numerical data. For the testes variable, we removed all values that were not S, M, or R since those were the only values that had meaning. For the vagina variable, we removed all values that were not S, P, or B since those were the only values that had meaning. For the pregnant variable, we removed all values that were not P since those were the only values that had meaning. we also changed all of the single values into their worded meanings to better understand the data. Selected weight, country, and hind foot length for exploratory analysis.
+
+```{r data carp hyp3, fig.align="center"}
+#Created new data frame to include only pregnant, age, sex, testes, and vagina data
+#since the hypothesis is only exploring these variables
+preg_data <- animal_raw %>% select(month,age,testes,vagina,pregnant,wgt,country,hfl)
+#Converting all variables into factors since none of them are numeric except for month
+#which can also be converted into a factor since the numbers represent specific months
+preg_data <- preg_data %>% mutate(pregnant = as_factor(pregnant),
+                     month = as_factor(month),
+                     age = as_factor(age),
+                     testes = as_factor(testes),
+                     vagina = as_factor(vagina),
+                     country = as_factor(country)) %>% 
+ mutate(testes = na_if(testes, "E"),
+        testes = na_if(testes, "Z"),
+        testes = na_if(testes, "J"),
+#changing values in testes variable that are not S, M, or R into NA values
+        vagina = na_if(vagina, "E"),
+        vagina = na_if(vagina, "Z"),
+        vagina = na_if(vagina, "5"),
+        vagina = na_if(vagina, "R"),
+#changing values in vagina variable that are not S, P, or B into NA values
+        pregnant = na_if(pregnant, "S"),
+        pregnant = na_if(pregnant, "L"),
+        pregnant = na_if(pregnant, "E"),
+       pregnant = na_if(pregnant, "Q"),
+#changing values in pregnant variable that are not P into NA values
+        age = na_if(age, "ZJ"))  %>% 
+#Changing this specific age value to NA because we cannot determine the age when both
+#letter are present 
+mutate(vagina = case_when(vagina %in% c("S") ~ "Swollen",
+                               vagina %in% c("P") ~ "Plugged",
+                               vagina %in% c("B") ~ "Both")) %>% 
+mutate(testes = case_when(testes %in% c("S") ~ "Scrotal",
+                          testes %in% c("M") ~ "Minor",
+                          testes %in% c("R") ~ "Recent")) %>% 
+mutate(age = case_when(age %in% c("J") ~ "Juvenile",
+                         age %in% c("Z") ~ "Adult"))
+#Changing all letters into their actual meaning to be able to understand the data and 
+#plots better
+```
+
+## A-PRORI HYPOTHESIS
+
+### PREFACE
+Given that we are provided with data regarding the status of the testes of male animals and the status of the vagina of the female animals, we believe that pregnancy could possibly be predicted by the status of these sex organs. The age of the female animal could also have an effect on whether the animal is pregnant in the assumption that a juvenile animal would most likely not be pregnant. We also want to explore the time of year on pregnancy since most species have a specific mating season. 
+
+Statistical Hypothesis: 
+$$ \begin{aligned}
+H_o : \beta_{Vagina:Testes} = 0\\
+H_A : \beta_{Vagina:Testes} \neq 0
+\end{aligned} $$
+
+Scientific Hypothesis: 
+The interaction between state of testes and state of vagina will affect the number of pregnancies, while controlling for age and month the of year. 
+
+### DATA VISUALIZATION
+```{r}
+#Vagina staus on pregancy status
+#preg_data %>% filter(!is.na(pregnant), !is.na(vagina)) %>% 
+#ggplot(aes(x = pregnant)) +
+#  geom_bar(stat = "count", position = position_dodge()) +
+#  facet_wrap(vars(vagina))
+#month of the year on pregnancy status
+#preg_data %>% filter(!is.na(pregnant)) %>% 
+#ggplot(aes(x = pregnant)) +
+#  geom_bar(stat = "count", position = position_dodge()) +
+#  facet_wrap(vars(month))
+#Combined outlook on vagina status and month of the year on pregnancy status
+#preg_data %>% filter(!is.na(pregnant), !is.na(vagina)) %>% 
+#ggplot(aes(x = pregnant)) +
+#  geom_bar(stat = "count", position = position_dodge()) +
+ # facet_grid(vagina ~ month)
+#Different combined outlook on vagina status and month of the year on pregnancy status
+#preg_data %>% filter(!is.na(pregnant), !is.na(vagina)) %>% 
+#ggplot(aes(x = pregnant, fill = vagina)) +
+#  geom_bar(stat = "count", position = position_dodge()) +
+#  facet_wrap(month ~ .)
+#Testes on pregnancy will not have an effect since none of the values match up in the data
+#preg_data %>%  
+#ggplot(aes(x = pregnant)) +
+#  geom_bar(stat = "count", position = position_dodge()) +
+#  facet_wrap(vars(testes))
+#Age on pregnancy will not have an effect since none of the values match up in the data
+#preg_data %>% 
+#ggplot(aes(x = pregnant)) +
+#  geom_bar(stat = "count", position = position_dodge()) +
+#  facet_wrap(vars(age))
+#No testes variables align with pregnancy and month
+#preg_data  %>% 
+#ggplot(aes(x = pregnant)) +
+ # geom_bar(stat = "count", position = position_dodge(), na.rm = TRUE) +
+  #facet_grid(testes ~ month)
+
+#No testes variables align with pregnancy and age
+#preg_data %>% filter(!is.na(pregnant)) %>% 
+#ggplot(aes(x = pregnant)) +
+ # geom_bar(stat = "count", position = position_dodge(), na.rm = TRUE) +
+  #facet_grid(testes ~ age)
+```
+
+Based on visualization of the data and of the graphs, we have found that the testes variable does not have any actual values that align with pregnancy status. This is due to the fact that the data is organized by each individual animal, and since males cannot become pregnant, it makes sense that there are no values that align with a positive pregnancy. Along with that, the age variable does not have any values that align with pregnancy either. We were curious to see if age has an effect on a positive pregnancy value, however, we cannot explore that since there is no data in that category to compare to pregnancy. Given these facts, we cannot conduct the model we originally planned since the model will not run with missing values in these two variables. The model is written below, but will not be run due to these issues. 
+
+### MODEL DEVELOPMENT
+```{r message = FALSE, warning = FALSE}
+# preg_by_vagina_testes <- glm(formula = pregnant ~ testes + vagina + age + month + testes:vagina, 
+#              family="binomial", data=preg_data)
+```
+
+#### GENERAL EQUATION
+$$ \begin{aligned}
+y_{Pregnancy} = 
+\beta_0 + \beta_{Testes}X_{Testes}? +
+\beta_{Vagina}X_{Vagina}? + 
+\beta_{Age}X_{Age}? + \\
+\beta_{Month}X_{Month}? + 
+\beta_{Testes.Vagina}(X_{Testes}*X_{Vagina})? 
+\end{aligned} $$
+
+### A PRIORI CONCLUSION
+Based on the analysis of the above analysis and figures, we can conclude that the A Priori hypothesis does not work and cannot provide the conclusion to our research question that we wanted. The testes variable was not a smart choice to use in this hypothesis since males are unable to get pregnant and since we did not know how the data would look. Secondly, the age variable provided no valuable data points for this hypothesis. While these variables are the reason for the failure of the hypothesis, the vagina and month variables both have valuable data points for us to explore regarding their effects on pregnancy. The hypothesis proposed in the A Priori involved only factor variables where glm using the binomial family is required, so we have decided to steer away from that direction to look at a different hypothesis using the normal general linear model. 
+
+## EXPLORATORY HYPOTHESIS
+
+### PREFACE
+After receiving the data set and the failure of the A Priori hypothesis, we have decided to move into another exploratory hypothesis. We want to explore the main effects of hind foot length, age, and month of the year on the weight of the animal along with interaction of month of the year and hind foot length. 
+
+**Statistical Hypothesis:**
+$$ \begin{aligned}
+H_o : \beta_{Month:HFL} = 0\\
+H_A : \beta_{Month:HFL} \neq 0
+\end{aligned} $$
+
+**Scientific Hypothesis: **
+we expect the interaction of hind foot length and month of the year to have an impact on the weight of the animal holding age constant. 
+
+we believe that as hind foot length and age increase, the weight of the animal will increase as well. I also believe that month will have an effect on the animals weight as there might be more food accessibility during warmer months.
+
+### DATA VISUALIZATION
+```{r message=FALSE, warning=FALSE, fig.align="center"}
+preg_data %>% filter(!is.na(age)) %>% 
+ggplot(aes(x = hfl, y = wgt, color = age, na.rm = TRUE)) +
+  geom_point() +
+  geom_jitter(alpha = 0.25) +
+  facet_wrap(vars(month)) +
+  labs(title = "Weight determined by Hind Foot Length, Month, and Age",
+       caption = "Each facet corresponds to their appropriate month of the year (1 = January)") +
+  ylab("Weight (g)") +
+  xlab("Hind Foot Length (mm)") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = .5))
+```
+The plot above shows hind foot length on the weight of each animal for each month of the year. Age is also included as a predictor, but as you can see there are little to no juvenile age points. The warmer months appear to have higher amounts of animals with larger weights as predicted, however, each month looks relatively similar. It also appears that as hind foot length increases to around 35, so does the weight of the animal. After hid foot length exceeds 35, weight decreases to around an average of 125. 
+
+### MODEL DEVELOPMENT
+```{r}
+wgt_mod <- lm(wgt ~ month  + hfl + age + month:hfl, data = preg_data)
+```
+
+#### GENERAL EQUATION
+$$ \begin{aligned}
+y_{weight} = 
+\beta_0 + 
+\beta_{hfl}X_{hfl}? + 
+\beta_{month}X_{month}? + 
+\beta_{age}X_{age}? + \\
+\beta_{age:hfl}(X_{age}*X_{hfl})? +
+\beta_{age:hfl}(X_{month}*X_{hfl})? 
+\end{aligned} $$
+
+
+#### MODEL VISUALIZATION
+
+```{r message=FALSE, warning=FALSE, fig.align="center"}
+# Plot the model in the prior graphs
+preg_data %>% filter(!is.na(age)) %>% 
+ggplot(aes(x = hfl, y = wgt, color = age))  +
+  geom_point() +
+  facet_wrap(vars(month)) +
+  stat_smooth(method ="lm",se = FALSE, color = "black", formula = y~x ) +
+  labs(title = "Weight determined by Hind Foot Length, Month, and Age with Model") +
+  xlab("Weight (g)") +
+  ylab("Hind Foot Length (mm)") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = .5))
+```
+
+### ANALYSIS OF MODEL
+```{r}
+# R-squared, glance
+r.sqr <- glance(wgt_mod) %>%  select(r.squared)
+kable(r.sqr, caption = "R Squared Value")
+
+# Beta terms for the model, tidy
+wgt_coef <- tidy(wgt_mod) %>% select(term, estimate)
+kable(wgt_coef, caption = "Model Beta Terms")
+
+# ANOVA - specify II or III
+#ANOVA type 3 
+kable(Anova(wgt_mod, type=3), digits = 4, caption = "Type 3 Sum of Squares Table")
+```
+Analyzing the sum of squares table, we can conclude that there is some degree of statistical significance regarding month and hind foot length on the weight of the animal. Each of the corresponding F statistics are very large with p-values well below the alpha value of 0.05, showing statistical significance. 
+Type III: F(11, 14368) = [11.2749], p = [0.0000]
+These results showed that there is a statistically significant interaction between the effects of hind foot length and month of the year on the weight of the animal. 
+These terms also capture the most data, and result in a majority of the dataset's variance as seen in the high sum of squares regression values of both terms and the interaction of the terms. Along with this analysis, the r squared value is below 0.5 which can indicate that this model is not a great fit for the data. This is most likely due to the higher weights that are in the middle of the hind foot lengths making the data not fully linear. 
+
+### OUTLIER CHECK
+Based on the graph above, there don't appear to be significant outliers that would affect the model. 
+
+# HYPOTHESIS IV
+
+### DATA CARPENTRY
+(NOTE: Data carpentry was done in a manner that creates one data set with the 
+necessary information for completion of both the a priori and exploratory 
+hypotheses.)
+
+Outline for Hypothesis IV Data Carpentry:
+1) Reduce the parent data set to just the columns needed for our particular
+a priori and exploratory analysis - month, day, year, decimalLatitude, taxa, 
+record_id, species, country, locality
+2) Formulate a separate data set to keep track of the various localities where 
+the data was pulled from. Manually, these locations were looked up on google maps, 
+with care to be as precise as possible, and the resulting latitude input into 
+this locality reference table. This allows us to have a locality reference set
+that can be used for increasing the number of decimalLatitude points we have. 
+**Note: The locality, 'valley' was determined to be too vague to give a latitude
+therefore it was assigned an NA and removed from the data set in the following 
+step of data carpentry.
+3) Merge the locality reference set with the original reduced data set for the 
+hypothesis. Yield increased number of decimalLatitude points in the set.
+4) Because the dependent variable in these analyses is decimalLatitude, we can 
+omit all rows that have an NA in this column. An NA in the decimalLatitude column
+can not safely be assumed to be a particular latitude.
+5) Delete more extraneous columns that are not needed for analysis.
+6) Merge with the species reference data set to get the taxa information we need
+to determine which entries are birds, a major qualifier for us. 
+7) Remove extraneous columns and correct data types for appropriate graphing.
+8) Normalize the day and month data columns to yield a variable for proportion 
+of the year. Based on the day, month, and leap year status, calculate the 
+proportion of the year that has passed at the time of data collection. This yields
+a better understanding of the time line of migration and makes graphing a time
+variable on the x-axis more palatable. This new scale spans from January 1st (0) 
+to December 30th (1.0).
+8) Get rid of day and month columns that are now extraneous.
+9) Set record ID and species to factors, needed for graphing and developing 
+models properly. 
+
+```{r}
+#levels Reduce the parent set to just the necessary columns
+hyp4_trial <- select(animal_mod, c("day", "month", "year", "species", "taxa", 
+                                  "decimalLatitude", "record_id", "locality", 
+                                  "country"))
+
+# change the latitude column name in hyp4_trial so that the merge might work
+hyp4_trial <- mutate(hyp4_trial, "latitude" = decimalLatitude)
+hyp4_trial <- select(hyp4_trial, -c(decimalLatitude))
+
+# Change the locality to a factor data type
+hyp4_trial <- mutate(hyp4_trial, locality = as_factor(locality))
+
+# Attempt to pull a list of the locality data from the original set - list of factors
+loc_set <- select(hyp4_trial, locality)
+loc_set <- drop_na(loc_set, locality)
+loc_set <- distinct(loc_set)
+```
+
+```{r}
+# Add a column to the ex_set that represents latitudinal coords based on the loc
+loc_set <- mutate(loc_set, "decimalLatitude" = 0)
+```
+
+```{r}
+# Begin changing the localities to latitudinal coords based on internet search 
+# and google maps
+loc_set <- mutate(loc_set, 
+                 "decimalLatitude" = ifelse(locality == "Winterthur Gardens, Delaware", 
+                                            39.8028897, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Highlands Co.; near parking area and nature trail at Archbold Biological Research Station, ca. 6 air mi S of Lake Placid. T38S, R30E, SE1/4 of SE1/4 Sec 7.", 
+                                            27.1886596, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Swampy woodland, 2 miles E of Tallahassee.", 
+                                            30.42752, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Muscogee-Rerdido [Perdido] River.", 
+                                            30.6057, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "near Lake Lindsey.", 
+                                            28.6344, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "road to St. Mark's lighthouse; St. Mark's Wildlife Refuge.", 
+                                            30.073834, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "3.5 miles north of Allicance Cross Road on Fla. Rt. 71.", 
+                                            30.6099, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "St. Vincent Island, wet swale", 
+                                            29.66106, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Eagle Mountain Trailhead, Clearwater National Forest", 
+                                            46.416843920069255, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Split Creek Trail, Nez Perce National Forest", 
+                                            46.23228984003364, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Canyon Creek Trailhead, Clearwater National Forest", 
+                                            46.252913097673044, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FS Rd 25 4.6 mi S of FS Rd 300, Gifford Pinchot National Forest", 
+                                            46.505559542706855, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Upper Hoh Rd 8.3 mi E of US 101", 
+                                            47.81895376490972, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FS Rd 443 0.8 mi S of Selway River Rd, Nez Perce National Forest", 
+                                            46.0401481298883, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Trib of Meadow Creek, FS Rd 443 2.6 mi S of FS Rd 223, Nez Perce National Forest", 
+                                            45.503521, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "near Red River Hotsprings, Nez Perce National Forest", 
+                                            45.78722686286971, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Slate Creek Rd 10.2 mi E of US 95, Nez Perce National Forest", 
+                                            45.71401977452455, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Burgdorf Rd 12.4 mi NW of Warren Wagon Rd", 
+                                            45.29988035496599, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Franklin Co.; Apalachicola National Estuarine Sanctuary; near the Marshall House on bayside of island.", 
+                                            29.731822, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Palm Beach Co.; Sand pine scrub just W of DuBois Park on south side of Jupiter Inlet. Naturalized.", 
+                                            26.943677610674015, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Pasco County; Just west of Blanton on FLA 41, ca. 2 miles east of US 75", 
+                                            28.416527974856926, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Leon County; near human habitation but in old hardwood forest with much beech and magnolia in ravine; on Ireland property near the Indian Mounds near Lake Jackson.", 
+                                            30.501187722398086, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Leon County; in heavily wooded area, ca 1/2 mile N of entrance to Maclay Gardens State Park, Tallahassee.", 
+                                            30.515840342243816, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Leon County; on wooded natural levee by the Apalachicola River, between Jim Woodruff Dam and U.S. Rt. 90 bridge, E of Sneads.", 
+                                            30.706378921147948, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Leon County; vicinity of the boat landing at the end of Rhoden Cove Road; west of Meridian road; on the SE shore of Lake Jackson; North of Tallahassee.", 
+                                            30.514022892911118, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Jefferson County; by E edge of West Lake Rd.; near NE shore of Lake Miccosukee; 1.6 mi. S of jctn. with paved Green Rd.; SW 1/4 of NW 1/4 Sec 6, T2N R4E", 
+                                            30.602716, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Franklin County; floodplain of Cow Creek Landing just S of Ochlockonee River, ca. 1 mi E of hiway 319 at terminus of C-370, ca. 4.5 air mi S of town of Sopchoppy.", 
+                                            30.022777553493384, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Alachua County; Mixed hardwood forest next to Williston Rd. (Hwy 331), South of Gainesville, FL, about 0.2 miles east of Hwy 121 (SW 34th Street) and 1 mile SW of Hwy 441 (Sec 3, T6S, R19E)", 
+                                            29.613779227167424, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Leon County; Tallahassee", 
+                                            30.4383, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "at Waikamoi trail, Maui, Hawaii", 
+                                            20.875374798596443, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "at Keopuka, Maui, Hawaii", 
+                                            20.878885725932502, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "at Keanae Arboretum, Maui, Hawaii", 
+                                            20.857488960260017, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Dade County; in Miami Beach", 
+                                            25.82213600561225, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Brevard County; Erna Nixon Hammock; property owned by Melbourne Village.", 
+                                            28.090612909391304, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Martin County; Jonathan Dickinson State Park", 
+                                            27.00351167883674, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Lee County; Caloosahatchee Regional Park", 
+                                            26.7220423129651, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Franklin Co.; between hiway 98 and the river opposite 3rd Street W in Carrabelle.", 
+                                            29.853393233465724, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Bay Co.; outside fence row bordering roadside dep.", 
+                                            30.233456987145733, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Denkanikota", 
+                                            12.527191576095444, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Kings Park & Botanic Garden, Fraser Avenue, West Perth WA 6005", 
+                                            -31.96110175115679, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Banksia Farm, Pearce Road, Mount Barker, Western Australia", 
+                                            -34.63689452561665, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Bush, W side of Albany Highway, ca. 50 km N of Mount Barker, N of turn-off to Cranbrook, in neighborhood of Trevelen Farm Winery, Western Australia", 
+                                            -34.22043875172234, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Lee Co.; hammock forest; west of Bonita Beach.", 
+                                            26.35840558149602, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Franklin Co.; St.Vincent Island", 
+                                            29.661697394166097, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Leon Co.; Elinor Klapp-Phipps Park", 
+                                            30.531390488094775, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Wakulla Co.; woods; sect 7, T4S, R3W, Tallahassee meridian; 30 mi. sw Tallahassee.", 
+                                            30.130142490681305, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "(Camporee Field) at Wallwood Boy Scout Reservation on Ocklawaha Arm of Lake Talquin, ca. 10 air mi S of Quincy.", 
+                                            30.446022305622485, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Franklin Co.; Tates Hell Swamp; Big Slough Branch of Whiskey George Creek; along North Boundary Rd", 
+                                            29.92759126329643, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; ; Floating in Withlachoochee River at Istachatta, Florida.", 
+                                            28.656736263473583, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "valley", NA, 
+                                            decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Franklin Co.; just N of Avenue B in town of Apalachicola.", 
+                                            29.727460008903993, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Bay Co.; bordering Moccasin Creek at Blue Springs Road bridge, N of Bennett (1.8 mi S of Rte 20)", 
+                                            30.378426159109644, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Bay Co.; pasture; just E of Rte 77 on N side of Southport; T2S, R14W, NE1/4 SE1/4 Sec 21", 
+                                            30.293614382997063, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Manatee Co.; Dunes, Anna Maria Key", 
+                                            27.512438861450704, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Leon Co.; Elinor Klapp-Phipps Park (W of Meridian Rd, N of Tallahassee)", 
+                                            30.531427453260314, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Franklin Co.; Dog Island; bordering large inland marsh between old dump area and the powerstation.", 
+                                            29.802308344308525, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Orange Co.; in lowland woods and around clearings of bay forests, east of taxiways at McCoy Field, Orlando.", 
+                                            28.403598, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Hernando Co.; Along US 41, 2 miles n. of Brooksville; low, grazed meadow at Croom Road; fence row along US 41.", 
+                                            28.59224054990206, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Florida; Gulf County; E side of", 
+                                            29.80213695612634, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Damien, Haiti", 
+                                            18.58416291268875, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "New Orleans, La.", 
+                                            30.03589411508861, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Port-au-Prince, Haiti", 
+                                            18.604731179458504, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Reserva BiolÃ³gica San Francisco-Transect T1 (2070m-R1)", 
+                                            -4.0079, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Bombuscaro - Podocarpus National Park (1050m-B)", 
+                                            -4.357096812020764, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Copalinga Private Reserve-blue trail (1050m-C)", 
+                                            -4.090509394000641, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Copalinga Private Reserve-red trail (1420m)", 
+                                            -4.091545566463852, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Reserva BiolÃ³gica San Francisco-NUMEX (2070m-R2)", 
+                                            -4.3571182076777655, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Copalinga Private Reserve-red trail (1350m)", 
+                                            -4.091545566463852, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Leon Co.; ditch along Domingo Avenue near corner of Solano Avenue in Tallahassee", 
+                                            30.445500497854418, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Monroe Co.; weedy vacant waterfront lot, Key West.", 
+                                            24.57449729175661, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "ca. 20 km N of Kojonup, Western Australia", 
+                                            -33.82317267856708, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Bush on Hi-Vallee Farm, Tootbardi Road, Badgingarra, Western Australia 6521",
+                                            -30.398708995779227, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL, Jefferson County, Wacissa Spring", 
+                                            30.339768184509975, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Palm Beach Co.; swamp in the Daggerwing Nature Center of South County Regional Park west of Boca Raton", 
+                                            26.379582811408163, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "at Hana Hwy, Maui, Hawaii", 
+                                            20.854605930302746, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Citrus Co.; off US 27 just south of Crystal River", 
+                                            32.85025758085637, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Leon Co.; railroad tracks just E of Capital Circle NW", 
+                                            30.495475402806598, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "Parking area just N of Australind Bypass, ca. 1 km SW of intersection with Old Coast Road, just E of Bunbury, Western Australia", 
+                                            -33.28468334695686, decimalLatitude),
+                 "decimalLatitude" = ifelse(locality == "FL; Dixie Co.; Shired Island", 
+                                            29.397515487412576, decimalLatitude))
+```
+
+```{r}
+# Apply the location reference set to all the columns in the hyp4 data set
+# if the loc matches one in the reference, add the decimal latitude to correspond
+hyp4_lats <- suppressMessages(left_join(hyp4_trial, loc_set))
+
+# delete the latitude column
+hyp4_lats <- select(hyp4_lats, -c(latitude))
+
+# Drop all the rows with NA in the latitude column
+hyp4_lats <- drop_na(hyp4_lats, `decimalLatitude`)
+
+# Change species heading to species_id for the merge to work
+hyp4_data <- mutate(hyp4_lats, "species_id" = `species`)
+
+# Delete unnecessary columns before the merge to maintain the correct taxa col
+hyp4_data <- select(hyp4_data, -c("taxa", "species"))
+
+# Merge the species reference set with the full data set to apply species, taxa,
+# and genus information to all of the rows with a species_id available
+hyp4_data <- left_join(hyp4_data, species_ref, by = c("species_id"))
+
+# Delete more unnecessary columns
+hyp4_data <- select(hyp4_data, -c("genus", "species"))
+
+# Cut data set to just birds because that is what the hypothesis specifies
+hyp4_filt <- filter(hyp4_data, taxa == "Bird")
+
+# Delete the locality column
+hyp4_filt <- select(hyp4_filt, -c(locality))
+```
+
+```{r}
+# Improved proportion of the year
+# ifelse statement at end accounts for leap years in addition to the ifelse in 
+# the month determiner for the variable number of days in february
+# case when statement applies for day differences in months
+hyp4_data <- mutate(hyp4_filt, "propYear" = ((case_when(month == 1 ~ 0, 
+                                            month == 2 ~ 31,
+                                            # Leap year 
+                                            month == 3 & year/4 == 0 ~ 60,
+                                            # Non-leap year
+                                            month == 3 & year/4 != 0 ~ 59,
+                                            month == 4 & year/4 == 0 ~ 91,
+                                            month == 4 & year/4 != 0 ~ 90,
+                                            month == 5 & year/4 == 0 ~ 121,
+                                            month == 5 & year/4 != 0 ~ 120,
+                                            month == 6 & year/4 == 0 ~ 152,
+                                            month == 6 & year/4 != 0 ~ 151,
+                                            month == 7 & year/4 == 0 ~ 182,
+                                            month == 7 & year/4 != 0 ~ 181,
+                                            month == 8 & year/4 == 0 ~ 213,
+                                            month == 8 & year/4 != 0 ~ 212,
+                                            month == 9 & year/4 == 0 ~ 244,
+                                            month == 9 & year/4 != 0 ~ 243,
+                                            month == 10 & year/4 == 0 ~ 274,
+                                            month == 10 & year/4 != 0 ~ 273,
+                                            month == 11 & year/4 == 0 ~ 305,
+                                            month == 11 & year/4 != 0 ~ 304,
+                                            month == 12 & year/4 == 0 ~ 335,
+                                      month == 12 & year/4 != 0 ~ 334) + day) / 
+                                               ifelse(year/4 == 0, 365, 366)))
+
+# Get rid of extraneous day and month columns now
+hyp4_data <- select(hyp4_data, -c(day, month))
+```
+
+```{r}
+# Adjust data types for the remaining columns that are going to be used for 
+# future analysis
+hyp4_final <- mutate(hyp4_data, 
+                     record_id = as_factor(record_id),
+                     species_id = as_factor(species_id))
+
+# Remove taxa column since they are all birds now
+hyp4_final <- select(hyp4_final, -c(taxa))
+```
+
+The proportion of the year and decimalLatitude do not appear to be colinear based on
+an exploratory analysis of the two variables plotted against one another. Graphs
+of this data can be seen in the supplemental materials section. 
+
+## A-PRORI HYPOTHESIS
+
+### PREFACE
+Birds follow migratory patterns often moving south for the winter months to 
+have offspring and protect themselves from freezing temperatures. The ecological
+study of this practice has occurred for many centuries. Our group plans on using
+the given ecological data to see if we can detect these seasonal patterns of 
+movement among different species. We have chosen to divide the bird taxa into 
+species because various species favor various latitudes and thus temperatures so
+averaging them across all birds might yield unfavorable results. 
+
+Statistical Hypothesis: 
+$$ \begin{aligned} 
+H_o : \beta_{Latitude:Species} = 0\\
+H_A : \beta_{Latitude:Species} \neq 0
+\end{aligned} $$
+***If the beta above is 0, that element has no impact on the model. If it is 
+anything else, it does have an impact on the final model. 
+
+Scientific Hypothesis: 
+It is commonly understood that birds follow migratory patterns with the changing 
+seasons that often cause them to move latitudinally. With the data provided, we 
+expect to be able to predict the latitudinal coordinate of birds dependent on an 
+interaction between time of the year and species. 
+
+### MODEL DEVELOPMENT & DATA VISUALIZATION
+The model for this hypothesis will explore the contributions of species and time
+of year on the latitude of a bird. Of important note, our model includes the 
+interaction between species and proportion of the year which we will be examining
+to see if various species have different migration patterns that occur on 
+different time scales through the year.
+```{r}
+# Designing the linear model for the data set created above
+# Includes species, proportion of the year and their interaction as predictors
+hyp4_apri_model <- lm(data = hyp4_final, 
+                      formula = decimalLatitude ~ species_id + propYear + 
+                        species_id:propYear)
+```
+
+#### GENERAL EQUATION
+$$ \begin{aligned} 
+decimalLatitude = \beta_{0} + \beta_{AS}(AS)? + \beta_{propYear}(propYear) + \\
+\beta_{propYear, AS}(propYear)(AS)? + \beta_{propYear, AB}(propYear)(AB)?
+\end{aligned} $$
+*** $\beta_{0}$ in this case represents the AB species of bird
+
+#### MODEL VISUALIZATION
+```{r, fig.align="center"}
+# Independent Var: Proportion of the Year
+# Dependent Var: Latitude
+ggplot(data = hyp4_final, aes(`propYear`, `decimalLatitude`)) +
+  # incorporate the species as that will have an impact on where the animal
+  # is located at any one point in the year
+  geom_jitter(aes(color = `species_id`), width = 0.1, height = 1) +
+  # Add a title
+  ggtitle("Bird Latitude at Time of Year Separated by Species") +
+  # Plot the linear regressions from the model determined above
+  # There are two independent lines produced by the model
+  # 1. AB group = prop and prop:AB slope, AB intercept 
+  # 2. AS group = Prop and prop:AS slope, AS intercept
+  geom_abline(slope = tidy(hyp4_apri_model)[[3,2]] + 
+                tidy(hyp4_apri_model)[[4,2]], 
+              intercept = tidy(hyp4_apri_model)[[2,2]],
+              color = "blue") +
+  geom_abline(slope = tidy(hyp4_apri_model)[[3,2]], 
+              intercept = tidy(hyp4_apri_model)[[1,2]],
+              color = "red") +
+  # Add more descriptive axis titles
+  labs(x = "Proportion of the Year Passed at Time of Sample",
+       y = "Decimal Latitude of Sample Location",
+       color = "Species") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = .5))
+```
+
+### ANALYSIS OF MODEL
+
+#### GENERAL EQUATION with Calculated Coefficents
+Coefficients for this linear model were retrieved from the tidy of our linear
+model outlined in the above section.
+
+$$ \begin{aligned} 
+decimalLatitude = 9.22 + 21.6*(AS)? + -1.07*(propYear) + \\
+-5.01* (propYear)(AS)?
+\end{aligned} $$
+
+R-squared evaluates how well our determined model fits the original data. 
+Typically, the higher the r-squared, the better fit the model is for that 
+particular spread of data. For this model, r-squared is 0.00496. This low value 
+means that our model neglects to account for variance in our data. Of note, this 
+is data randomly collected by humans on animals. The nature of this data means 
+that we will have some natural variation because these things are harder to 
+predict than finite mechanical processes. Examining our residuals plot (QQ), we 
+can see that our data has some clear groupings that cause certain volumes of 
+residuals to be higher, contributing to the low r-squared. The QQ plot for these 
+graphs can be found in the supplementary materials section.
+
+We have decided to run a III type Anova on our model for this hypothesis, as we 
+are primarily asking questions about the interaction term for this hypothesis. 
+The type III Anova respects marginality. The ANOVA focuses on comparing the 
+effects of species and time of year on latitude. The ANOVA reveled that there 
+was not a statistically significant difference in latitude between the two 
+groups of species at certain times of the year (F(1,235) = [0.0051], p = 0.9433). 
+The P-value is greater than the determined $\alpha$ value of 0.05, therefore we 
+fail to reject the null hypothesis. Additionally of note, none of the main effects
+for this model have significance either, with p-values greater than our 
+pre-determined $\alpha$.
+
+```{r}
+## DISPLAY ALL OF THESE VALUES WITH KABLES, Make sure to give accurate captions
+# for each printed kable
+
+# Beta terms for the model, tidy
+kable(select(tidy(hyp4_apri_model), "term", "estimate", "std.error"),
+      caption = "Coefficients for the Linear Model of Latitude by Time with 
+      Species")
+
+# R-squared, glance
+kable(select(glance(hyp4_apri_model), "r.squared"),
+      caption = "R-squared for the Linear Model of Latitude by Time with 
+      Species")
+
+# ANOVA - specify II or III
+# Because an interaction is included, use ANOVA type III
+hyp4_apri_anova <- Anova(hyp4_apri_model, type = "III")
+
+# Display the results of the ANOVA test from above
+kable(hyp4_apri_anova,
+      caption = "ANOVA (III) Results for the Linear Model of Latitude by Time
+      with Species")
+```
+
+### OUTLIER ELIMINATION
+*** Outlier graphs can be found in the supplemental section for the hypothesis IV.
+
+I am of the opinion that the outliers that were shown in the Cooks distance and 
+hat plot models are not actually outliers despite their outstanding values on
+these two graphs. Due to the nature of the data being 'grouped' regionally,
+with major volumes of points taken in the northern hemisphere, the model we 
+produced obviously points out that the negative latitude points in Australia 
+are 'outliers'. In comparison to the NA points, there is a much smaller volume 
+of Australian points that brings up their qualifiers as outliers in this model
+development. Due to the way the problem was worded, not taking these rough
+'groupings' into account, I don't think we can justifiably remove these points
+from the larger data set. Instead, I propose that we address these 'groupings'
+in the exploratory analysis to see if the data can be divided regionally to yield
+a better understanding of the latitude change in bird migration over time. 
+* NA = North America
+
+## EXPLORATORY HYPOTHESIS I 
+
+### PREFACE
+Due to the problems faced in outlier analysis and data visualization in the a
+priori analysis above, our team has detected that there are some regional 
+groupings in the data that are dependent on the data collectors home locations. 
+We believe that grouping data more tightly by country or even region will yield 
+a better understanding of the original question on if bird latitude (migration
+patterns) depends on the time of year. 
+
+In addition, the data set is going to be reduced further as only two points were
+supplied for the AS species. This volume is not sufficient enough to draw valid
+hypothesis. As such, the data set will be reduced further to only examine the AB
+species of bird. 
+
+Statistical Hypothesis: 
+$$ \begin{aligned} 
+H_o : \beta_{PropYear:Country} = 0\\
+H_A : \beta_{PropYear:Country} \neq 0
+\end{aligned} $$
+***If the beta above is 0, that element has no impact on the model. If it is 
+anything else, it does have an impact on the final model. 
+
+Scientific Hypothesis: 
+The interaction between country and time of year has a significant impact on the 
+predictive capability of the linear model for the latitude. As populations of
+birds are not able to teleport to different localities, restricting their analysis
+by country could be valuable in determining if their latitude changes with time
+of the year. 
+
+### Summary of Exploratory Data Carpentry
+1) Reduce the data set to remove the AS species type, leaving only the AB species.
+This is done because we found that we only have two AS species entries in the 
+set which is not enough to draw conclusions from.
+2) Divide up the original data set into regional categories by country. Adjust 
+the identifiers for country with appropriate alpha-2 standard country labels.
+3) Change the data type for the country column to a factor.
+4) Outlier studies have determined that we can omit the single India point from
+our data set. With only one point, we cannot determine an appropriate equation 
+to model this data, therefore we reccommend removing it. 
+
+```{r}
+# Filter out the AS species from the previous data set
+h4_ex1_data <- filter(hyp4_final, species_id == "AB")
+
+# Change up the country labels so that they are all consistent
+# Two letter codes googled - pretty standard fare, alpha-2 standard code
+h4_ex1_data_mod <- mutate(h4_ex1_data, 
+                          "country" = ifelse(country == "UNITED STATES", "US", 
+                                             country),
+                          "country" = ifelse(country == "United States of America", 
+                                             "US", country),
+                          "country" = ifelse(country == "US", "US", country),
+                          "country" = ifelse(country == "AUSTRALIA", "AU", 
+                                             country),
+                          "country" = ifelse(country == "HT", "HT", country),
+                          "country" = ifelse(country == "ECUADOR", "EC", 
+                                             country),
+                          "country" = ifelse(country == "INDIA", "IN", country))
+
+# Change the country data type to a factor
+h4_ex1_data <- mutate(h4_ex1_data_mod, 
+                          country = as_factor(country))
+
+# Remove the india point
+h4_ex1_data <- filter(h4_ex1_data, country != "IN")
+```
+
+### H4 Exploratory 1 Model Formation + Visualization
+GENERAL EQUATION:
+$$ \begin{aligned} 
+decimalLatitude = \beta_{0} + \beta_{PropYear}(PropYear) + \beta_{AU}(AU)? + \beta_{HT}(HT)? \\
++ \beta_{EC}(EC)? + \beta_{AU, PropYear}(PropYear)(AU)? \\
++ \beta_{HT, PropYear}(PropYear)(HT)? + \beta_{EC, PropYear}(PropYear)(EC)?
+\end{aligned} $$
+*** $\beta_{0}$ in this case represents the United States
+
+A secondary model without the addition of interaction terms was included for
+comparison. The equation for that alternative model is as follows:
+$$ \begin{aligned} 
+decimalLatitude = \beta_{0} + \beta_{PropYear}(PropYear) + \\
+\beta_{AU}(AU)? + \beta_{HT}(HT)? + \beta_{EC}(EC)?
+\end{aligned} $$
+*** $\beta_{0}$ in this case represents the United States
+
+```{r, fig.align="center"}
+# Model Formation for the Exploratory Model I
+h4_ex1_model <- lm(data = h4_ex1_data,
+                   decimalLatitude ~ propYear + country + propYear:country)
+
+# Alternative Model for the Exploratory Analysis I - Model II
+# Does not include the interaction terms
+h4_ex1_mod2 <- lm(data = h4_ex1_data,
+                  decimalLatitude ~ propYear + country)
+
+# Visualization of the Raw Data and the Models
+# Independent Var: Proportion of the Year
+# Dependent Var: Latitude
+# Including country as a color delineator/predictor
+ggplot(data = h4_ex1_data, aes(`propYear`, `decimalLatitude`)) +
+  # incorporate the species as that will have an impact on where the animal
+  # is located at any one point in the year
+  geom_jitter(aes(color = country), width = 0.1, height = 1) +
+  # Add a title
+  ggtitle("Bird Latitude at Time of Year Separated by Species") +
+  # Plot the linear regressions from the model determined above
+  # LINE FOR THE UNITED STATES
+  geom_abline(slope = tidy(h4_ex1_model)[[2,2]], 
+              intercept = tidy(h4_ex1_model)[[1,2]], 
+              color = "red") +
+  # LINE FOR ECUADOR
+  geom_abline(slope = tidy(h4_ex1_model)[[2,2]] + tidy(h4_ex1_model)[[8,2]], 
+              intercept = tidy(h4_ex1_model)[[1,2]] + tidy(h4_ex1_model)[[5,2]], 
+              color = "magenta") +
+  # LINE FOR HAITI
+  geom_abline(slope = tidy(h4_ex1_model)[[2,2]] + tidy(h4_ex1_model)[[7,2]], 
+              intercept = tidy(h4_ex1_model)[[1,2]] + tidy(h4_ex1_model)[[4,2]], 
+              color = "lightblue") +
+  # LINE FOR AUSTRALIA
+  geom_abline(slope = tidy(h4_ex1_model)[[2,2]] + tidy(h4_ex1_model)[[6,2]], 
+              intercept = tidy(h4_ex1_model)[[1,2]] + tidy(h4_ex1_model)[[3,2]], 
+              color = "green") +
+  # Add more descriptive axis titles
+  labs(x = "Proportion of the Year Passed at Time of Sample",
+       y = "Decimal Latitude of Sample Location",
+       color = "Country of Sample Origin") +
+  theme_bw()+
+  theme(plot.title = element_text(face = "bold", hjust = .5) )
+```
+
+### H4 Exploratory 1 Model Analysis
+GENERAL EQUATION WITH FILLED IN COEFFICIENTS:
+$$ \begin{aligned} 
+decimalLatitude = 31.8 + 5.63*(PropYear) + -63.5*(AU)? + -13.2*(HT)? \\
++ -35.9*(EC)? + -8.76*(PropYear)(AU)? \\
++ -5.66*(PropYear)(HT)? + -5.60*(PropYear)(EC)?
+\end{aligned} $$
+
+R-squared gives us a fairly good idea of the amount of variation accounted for 
+by the model. For model 1, which is the model including interactions, the R^^2 
+was determined to be 0.9629. Model II, which is the model that does not 
+include interactions, the R^^2 was 0.9613. Both of these models yield R^^2 vals
+that are significantly higher than the a priori model, indicating that they 
+better capture the variation in the data set. Comparing these results of the two
+models, the model with interactions improves our understanding of the data by 
+having a higher R^^2, but not by a large margin. Further examination of AIC and
+sum of squares will be able to tell us the value of the interaction term. 
+
+Two ANOVA tests were performed to analyze the effects of proportion of the year 
+and country of sample on recorded latitude. One of these ANOVA's was run on the 
+model with interactions while the other was run on the model with interactions.
+A type II ANOVA was used for the model without interactions while a type III was
+used for the model with interactions, chosen to respect marginality. 
+Type III (Model I): F(3, 228) = [3.308981], p = [0.0209287]
+These results showed that there is a statistically significant interaction 
+between the effects of country of recording and time of year on the latitude
+recorded. This conclusion was reached using an $\alpha = 0.05$, an accepted
+standard. 
+Outside of the hypothesis, main effects for proportion of the year and country
+were significant in the Type III model while proportion of the year was not 
+significant in the Type II model. F statistics and p-values can be found in the
+tables below. 
+
+Comparison of the performance of the two models was done with AIC. AIC for model
+I with interactions is 1437.399 with 9 degrees of freedom. AIC for model I w/o 
+interactions is 1441.457 with 6 degrees of freedom. From this analysis in 
+addition to the the r-squared values above, it is safe to say that the 
+interaction between country and time of year is not significant in capturing the 
+variation of our data. The model without interactions has a high r-squared in 
+addition to a higher AIC with less degrees of freedom. This tells us that the 
+best model for capturing our data on latitude is country and time of year without
+interactions.
+
+```{r}
+# Beta terms for the model, tidy
+kable(select(tidy(h4_ex1_model), "term", "estimate", "std.error"),
+      caption = "Coefficients for the Linear Model of Latitude by Time with 
+      Country")
+
+# R-squared, glance
+kable(select(glance(h4_ex1_model), "r.squared"),
+      caption = "R-squared for the Linear Model of Latitude by Time with 
+      Country w/ Interactions")
+kable(select(glance(h4_ex1_mod2), "r.squared"),
+      caption = "R-squared for the Linear Model of Latitude by Time with 
+      Country w/o Interactions")
+
+# ANOVA - specify II or III
+# Because an interaction is included, use ANOVA type III
+hyp4_ex1_anova <- Anova(h4_ex1_model, type = "III")
+
+# Display the results of the ANOVA test from above
+kable(hyp4_ex1_anova,
+      caption = "ANOVA (III) Results for the Linear Model of Latitude by Time
+      with Country")
+
+# Display the ANOVA Sum of Squares for model two so that we can make appropriate
+# comparisons on the SSregression
+hyp4_ex1_anova2 <- Anova(h4_ex1_mod2, type = "II")
+kable(hyp4_ex1_anova2,
+      caption = "ANOVA (II) Results for the Linear Model of Latitude by Time
+      with Country without Interactions")
+
+# Compare the model with the interactive term to the model without the interaction
+# We want AIC to be lower and df to be lower
+kable(AIC(h4_ex1_model, h4_ex1_mod2),
+      caption = "AIC Comparison of Latitude Models - One with Interaction and 
+      the Other Without")
+```
+
+# Supplemental Data
+## HYPOTHESIS I
+### OUTLIERS
+```{r}
+outlier_HFL
+Cooksd_HFL
+
+kable(select(tidy(HFL_by_weight_noage), c(term, estimate, p.value)),
+      caption = "Terms for Final Model (ageless)")
+
+kable(select(tidy(HFL_by_weight), c(term, estimate, p.value)),
+      caption = "Terms for Initial Model")
+
+```
+
+## HYPOTHESIS IV
+### CHECK FOR COLINEARITY
+```{r}
+# Check for covariance between time and latitude
+# Check by graphing time v. latitude in a direct correlation
+ggplot(data = hyp4_final, aes(propYear, decimalLatitude)) +
+  geom_point() +
+  ggtitle("Check for Colinearity")
+```
+
+### OUTLIER CHECK
+```{r, fig.align="center"}
+# Shows the spread of the standard residuals for our model
+# We can use this to help spot outlier later which will have much higher or 
+# lower bins than the majority of the data
+ggplot(augment(hyp4_apri_model), aes(.std.resid)) +
+  geom_histogram(bins = 30) +
+  # Title added to help with clarity of the data
+  ggtitle("Standard Residuals for the Linear Model of Latitude by Time with 
+      Species")
+```
+
+```{r, fig.align="center"}
+# Make a QQ plot to see the distribution pattern of our residuals
+ggplot(augment(hyp4_apri_model), aes(sample = .std.resid)) +
+  # Makes our QQ graph
+  stat_qq() +
+  stat_qq_line() +
+  # Add title for clarity on first read
+  ggtitle("QQ Plot to Check Residual Distribution for the Lat by Time + Species
+          Linear Model") +
+  # Provides a reference for the slope 1 line that a regularly distributed graph 
+  # would have
+  geom_abline(slope = 1, intercept = 0, linetype = 2, color = "red")
+```
+
+```{r, fig.align="center"}
+# Add identifiers to the augmented data - used in the next plot
+
+# Make labels easier
+hyp4_apri_mod_aug <- rowid_to_column(augment(hyp4_apri_model))
+
+# Augment the model augment table so that we can produce the graph we want next
+hyp4_apri_mod_aug <- pivot_longer(hyp4_apri_mod_aug,
+                                  cols = c(.std.resid, .resid),
+                                  names_to = "Residual Type",
+                                  values_to = "Residual")
+
+# Add the residual cols back to the augmented table so that I can do the cond
+# itional labeling in the graph - use a mutating join
+hyp4_apri_mod_aug <- suppressMessages(left_join(hyp4_apri_mod_aug, 
+                                                augment(hyp4_apri_model)))
+
+# Calculate the average hat value - needed for the graphs
+# $$\bar{h}=\frac{k+1}{n}$$ the equation for the hat avg
+# k = num beta terms not including beta 0 = 4
+# n = sample size = 239
+# Scalar value for funsies
+avg_hat_hyp4_apri <- (4 + 1) / 239
+```
+
+```{r, fig.align="center"}
+# Look at the residuals versus the hat values in a graph
+ggplot(hyp4_apri_mod_aug, aes(.hat, Residual)) +
+  # So we can compare the residuals and the standard residuals 
+  facet_wrap(vars(`Residual Type`)) +
+  geom_point() +
+  # Line marking average hat value
+  geom_vline(xintercept = avg_hat_hyp4_apri, linetype = 2) +
+  # Line marking 2*average hat value
+  geom_vline(xintercept = 2 * avg_hat_hyp4_apri, linetype = 2, color = "orange") +
+  # Line marking 3*average hat value
+  geom_vline(xintercept = 3 * avg_hat_hyp4_apri, linetype = 2, color = "red") +
+  # Add a title for clarity of graphs purpose
+  ggtitle("Hat Plot of Our Linear Model for Lat by Time and Species") +
+  # Attempt to label only the points with a large hat value
+  geom_text(aes(label = if_else(.hat >= (2 * avg_hat_hyp4_apri), paste(`rowid`), "")), 
+            size = 4, nudge_y = 0.7)
+```
+
+```{r, fig.align="center"}
+# Create a graph with the cooks distance evaluations
+ggplot(hyp4_apri_mod_aug, aes(.hat, .std.resid, size = .cooksd)) +
+  geom_point(color = "orange") + 
+  # Line marking average hat value
+  geom_vline(xintercept = avg_hat_hyp4_apri, linetype = 2) +
+  # Line marking 2*average hat value
+  geom_vline(xintercept = 2 * avg_hat_hyp4_apri, linetype = 2, color = "orange") +
+  # Line marking 3*average hat value
+  geom_vline(xintercept = 3 * avg_hat_hyp4_apri, linetype = 2, color = "red") +
+  # Add a title so we can see what we are doing immediately
+  ggtitle("Evaluation of Cooks Distance for Our Linear Model for Lat by Time 
+          and Species") +
+  # Attempt to label only the points with a large cooks distance with their 
+  # unique so we can move them out later
+  # Red labels are used to ID points that I believe have a CD that is large 
+  # enough relative to the majority of the points to warrant being considered
+  # a removable outiler
+  geom_text(aes(label = if_else(.cooksd >= (2/sqrt(239))/2, paste(`rowid`), "")), 
+            size = 3, nudge_y = 0.5, color = "red") +
+  # Attempt to label only the points with a large cooks distance with their 
+  # unique BOLD response so we can move them out later
+  geom_text(aes(label = if_else(.cooksd >= 2/sqrt(239), paste(`rowid`), "")), 
+            size = 3, nudge_y = 0.5) 
+```
